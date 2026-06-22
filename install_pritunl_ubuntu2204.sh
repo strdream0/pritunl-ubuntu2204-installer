@@ -16,16 +16,24 @@ MONGODB_URI="mongodb://127.0.0.1:27017/pritunl"
 DETECTED_PRIVATE_IP=""
 DETECTED_PUBLIC_IP=""
 
+COLOR_RESET=""
+COLOR_BOLD=""
+COLOR_RED=""
+COLOR_GREEN=""
+COLOR_YELLOW=""
+COLOR_BLUE=""
+COLOR_CYAN=""
+
 log() {
-  printf '[INFO] %s\n' "$*"
+  printf '%s[INFO]%s %s\n' "${COLOR_CYAN}" "${COLOR_RESET}" "$*"
 }
 
 warn() {
-  printf '[WARN] %s\n' "$*" >&2
+  printf '%s[WARN]%s %s\n' "${COLOR_YELLOW}" "${COLOR_RESET}" "$*" >&2
 }
 
 die() {
-  printf '[ERROR] %s\n' "$*" >&2
+  printf '%s[ERROR]%s %s\n' "${COLOR_RED}" "${COLOR_RESET}" "$*" >&2
   exit 1
 }
 
@@ -33,19 +41,19 @@ usage() {
   cat <<EOF
 Usage: ${SCRIPT_NAME} [options]
 
-Install MongoDB, OpenVPN, WireGuard and Pritunl on Ubuntu 22.04.
+Install MongoDB, OpenVPN, WireGuard tools and Pritunl on Ubuntu 22.04.
 
 Options:
   --mongodb-version <version>   MongoDB major version. Default: ${MONGODB_VERSION}
-  --admin-port <port>           Pritunl web port to expose in hints. Default: ${ADMIN_PORT}
-  --vpn-port <port>             VPN port to expose in firewall hints. Default: ${VPN_PORT}
-  --public-address <address>    Public IP or hostname shown in final output
+  --admin-port <port>           Pritunl web port. Default: ${ADMIN_PORT}
+  --vpn-port <port>             VPN port. Default: ${VPN_PORT}
+  --public-address <address>    Override detected public address
   --mongodb-uri <uri>           MongoDB URI for Pritunl. Default: ${MONGODB_URI}
-  --distro-codename <codename>  Override Ubuntu codename. Default: detected from /etc/os-release
+  --distro-codename <codename>  Override Ubuntu codename
   --disable-ufw                 Disable UFW after install
-  --skip-openvpn-repo           Use Ubuntu's OpenVPN package instead of OpenVPN upstream repo
+  --skip-openvpn-repo           Use Ubuntu OpenVPN package instead of upstream repo
   --skip-wireguard              Do not install WireGuard tools
-  --allow-unsupported-os        Continue even if the host is not Ubuntu 22.04
+  --allow-unsupported-os        Continue even if host is not Ubuntu 22.04
   -h, --help                    Show this help
 
 Examples:
@@ -75,6 +83,44 @@ capture_first_line() {
   awk 'NF { print; exit }'
 }
 
+setup_colors() {
+  if [[ -t 1 ]] && command -v tput >/dev/null 2>&1; then
+    local colors
+    colors="$(tput colors 2>/dev/null || echo 0)"
+    if [[ "${colors}" =~ ^[0-9]+$ ]] && (( colors >= 8 )); then
+      COLOR_RESET="$(tput sgr0)"
+      COLOR_BOLD="$(tput bold)"
+      COLOR_RED="$(tput setaf 1)"
+      COLOR_GREEN="$(tput setaf 2)"
+      COLOR_YELLOW="$(tput setaf 3)"
+      COLOR_BLUE="$(tput setaf 4)"
+      COLOR_CYAN="$(tput setaf 6)"
+    fi
+  fi
+}
+
+print_section() {
+  local title="$1"
+  printf '\n%s%s%s\n' "${COLOR_BOLD}${COLOR_BLUE}" "${title}" "${COLOR_RESET}"
+}
+
+strip_ansi() {
+  sed -E 's/\x1B\[[0-9;]*[[:alpha:]]//g'
+}
+
+extract_pritunl_credentials() {
+  local raw_output="$1"
+  local clean_output
+  local username=""
+  local password=""
+
+  clean_output="$(printf '%s\n' "${raw_output}" | strip_ansi)"
+  username="$(printf '%s\n' "${clean_output}" | awk -F'"' '/username:/ {print $2; exit}')"
+  password="$(printf '%s\n' "${clean_output}" | awk -F'"' '/password:/ {print $2; exit}')"
+
+  printf '%s\n%s\n' "${username}" "${password}"
+}
+
 cleanup_tmp() {
   if [[ -n "${TMP_DIR:-}" && -d "${TMP_DIR}" ]]; then
     rm -rf "${TMP_DIR}"
@@ -84,7 +130,7 @@ cleanup_tmp() {
 on_error() {
   local exit_code="$1"
   local line_no="$2"
-  printf '[ERROR] Command failed at line %s with exit code %s\n' "${line_no}" "${exit_code}" >&2
+  printf '%s[ERROR]%s Command failed at line %s with exit code %s\n' "${COLOR_RED}" "${COLOR_RESET}" "${line_no}" "${exit_code}" >&2
   exit "${exit_code}"
 }
 
@@ -174,10 +220,10 @@ validate_environment() {
   require_command dpkg
   require_command curl
   require_command gpg
+  require_command python3
 
   validate_port "admin port" "${ADMIN_PORT}"
   validate_port "vpn port" "${VPN_PORT}"
-
   [[ "${MONGODB_VERSION}" =~ ^[0-9]+\.[0-9]+$ ]] || die "Unsupported MongoDB version format: ${MONGODB_VERSION}"
 
   local arch
@@ -423,75 +469,85 @@ verify_services() {
 }
 
 print_summary() {
-  local endpoint
-  local admin_password=""
+  local public_access=""
+  local private_access=""
+  local admin_password_output=""
   local setup_key=""
   local mongod_status
   local pritunl_status
+  local admin_username=""
+  local admin_password=""
+  local credentials=()
 
   detect_private_ip
   detect_public_ip
 
   if [[ -n "${PUBLIC_ADDRESS}" ]]; then
-    endpoint="${PUBLIC_ADDRESS}"
-  elif [[ -n "${DETECTED_PUBLIC_IP}" ]]; then
-    endpoint="${DETECTED_PUBLIC_IP}"
-  elif [[ -n "${DETECTED_PRIVATE_IP}" ]]; then
-    endpoint="${DETECTED_PRIVATE_IP}"
+    public_access="${PUBLIC_ADDRESS}"
   else
-    endpoint="<server-ip-or-hostname>"
+    public_access="${DETECTED_PUBLIC_IP}"
   fi
+  private_access="${DETECTED_PRIVATE_IP}"
 
   if command -v pritunl >/dev/null 2>&1; then
     setup_key="$(pritunl setup-key 2>/dev/null || true)"
-    admin_password="$(pritunl default-password 2>/dev/null || true)"
+    admin_password_output="$(pritunl default-password 2>/dev/null || true)"
+  fi
+
+  if [[ -n "${admin_password_output}" ]]; then
+    mapfile -t credentials < <(extract_pritunl_credentials "${admin_password_output}")
+    admin_username="${credentials[0]:-}"
+    admin_password="${credentials[1]:-}"
   fi
 
   mongod_status="$(systemctl is-active mongod 2>/dev/null || true)"
   pritunl_status="$(systemctl is-active pritunl 2>/dev/null || true)"
 
-  cat <<EOF
+  printf '\n%s%s================ 安装完成 ================%s\n' "${COLOR_BOLD}" "${COLOR_GREEN}" "${COLOR_RESET}"
 
-================ 安装完成 ================
-
-访问地址
-  管理后台: https://${endpoint}:${ADMIN_PORT}
-  优先使用: ${endpoint}
-  内网 IP : ${DETECTED_PRIVATE_IP:-<未检测到>}
-  外网 IP : ${DETECTED_PUBLIC_IP:-<未检测到>}
-
-服务状态
-  mongod  : ${mongod_status}
-  pritunl : ${pritunl_status}
-
-端口信息
-  管理端口 : ${ADMIN_PORT}/tcp
-  VPN 端口 : ${VPN_PORT}/tcp, ${VPN_PORT}/udp
-  MongoDB  : ${MONGODB_URI}
-
-防火墙提醒
-  请放行 ${ADMIN_PORT}/tcp
-  请放行 ${VPN_PORT}/tcp 和 ${VPN_PORT}/udp
-
-初始化步骤
-  1. 打开上面的管理后台地址
-  2. 输入 Setup Key 完成初始化
-  3. 设置管理员账号和密码
-  4. 创建 Organization、Users、Server
-  5. 关联 Organization 后启动 Server
-  6. 下载用户的 .ovpn 配置文件并导入客户端
-
-EOF
-
-  if [[ -n "${setup_key}" ]]; then
-    printf 'Setup Key:\n%s\n\n' "${setup_key}"
+  print_section "访问地址"
+  if [[ -n "${public_access}" ]]; then
+    printf '  外网访问 : %shttps://%s:%s%s\n' "${COLOR_CYAN}" "${public_access}" "${ADMIN_PORT}" "${COLOR_RESET}"
   else
+    printf '  外网访问 : %s<未检测到>%s\n' "${COLOR_CYAN}" "${COLOR_RESET}"
+  fi
+  if [[ -n "${private_access}" ]]; then
+    printf '  内网访问 : %shttps://%s:%s%s\n' "${COLOR_CYAN}" "${private_access}" "${ADMIN_PORT}" "${COLOR_RESET}"
+  else
+    printf '  内网访问 : %s<未检测到>%s\n' "${COLOR_CYAN}" "${COLOR_RESET}"
+  fi
+
+  print_section "服务状态"
+  printf '  mongod   : %s%s%s\n' "${COLOR_GREEN}" "${mongod_status}" "${COLOR_RESET}"
+  printf '  pritunl  : %s%s%s\n' "${COLOR_GREEN}" "${pritunl_status}" "${COLOR_RESET}"
+
+  print_section "端口信息"
+  printf '  管理端口 : %s/tcp\n' "${ADMIN_PORT}"
+  printf '  VPN 端口 : %s/tcp, %s/udp\n' "${VPN_PORT}" "${VPN_PORT}"
+  printf '  MongoDB  : %s\n' "${MONGODB_URI}"
+
+  print_section "密钥和初始账户"
+  printf '  Setup Key : %s%s%s\n' "${COLOR_YELLOW}" "${setup_key:-<未获取>}" "${COLOR_RESET}"
+  printf '  用户名    : %s%s%s\n' "${COLOR_YELLOW}" "${admin_username:-<未获取>}" "${COLOR_RESET}"
+  printf '  初始密码  : %s%s%s\n' "${COLOR_YELLOW}" "${admin_password:-<未获取>}" "${COLOR_RESET}"
+
+  print_section "防火墙提醒"
+  printf '  请放行 %s/tcp\n' "${ADMIN_PORT}"
+  printf '  请放行 %s/tcp 和 %s/udp\n' "${VPN_PORT}" "${VPN_PORT}"
+
+  print_section "初始化步骤"
+  printf '  1. 打开上面的访问地址\n'
+  printf '  2. 输入 Setup Key 完成初始化\n'
+  printf '  3. 使用初始管理员账号登录并立即修改密码\n'
+  printf '  4. 创建 Organization、Users、Server\n'
+  printf '  5. 关联 Organization 后启动 Server\n'
+  printf '  6. 下载用户的 .ovpn 配置文件并导入客户端\n'
+
+  if [[ -z "${setup_key}" ]]; then
     warn "无法自动获取 Setup Key，请手动执行: sudo pritunl setup-key"
   fi
 
-  if [[ -n "${admin_password}" ]]; then
-    printf '默认管理员信息:\n%s\n' "${admin_password}"
-  else
+  if [[ -z "${admin_username}" && -z "${admin_password}" ]]; then
     warn "无法自动获取默认管理员信息，请手动执行: sudo pritunl default-password"
   fi
 
@@ -499,6 +555,7 @@ EOF
 }
 
 main() {
+  setup_colors
   parse_args "$@"
   ensure_root "$@"
   load_os_release
