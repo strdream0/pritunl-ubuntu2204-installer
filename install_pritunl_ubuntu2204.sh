@@ -13,6 +13,7 @@ SKIP_OPENVPN_REPO="0"
 SKIP_WIREGUARD="0"
 ALLOW_UNSUPPORTED_OS="0"
 MONGODB_URI="mongodb://127.0.0.1:27017/pritunl"
+ACTION=""
 DETECTED_PRIVATE_IP=""
 DETECTED_PUBLIC_IP=""
 
@@ -41,7 +42,14 @@ usage() {
   cat <<EOF
 Usage: ${SCRIPT_NAME} [options]
 
-Install MongoDB, OpenVPN, WireGuard tools and Pritunl on Ubuntu 22.04.
+Actions:
+  --action install              安装
+  --action reinstall           重新安装
+  --action uninstall           完全卸载
+  --action start               启动服务
+  --action stop                停止服务
+  --action restart             重启服务
+  --action status              查看状态
 
 Options:
   --mongodb-version <version>   MongoDB major version. Default: ${MONGODB_VERSION}
@@ -58,7 +66,9 @@ Options:
 
 Examples:
   sudo bash ${SCRIPT_NAME}
-  sudo bash ${SCRIPT_NAME} --public-address 203.0.113.10 --vpn-port 1194
+  sudo bash ${SCRIPT_NAME} --action install
+  sudo bash ${SCRIPT_NAME} --action reinstall
+  sudo bash ${SCRIPT_NAME} --action status
 EOF
 }
 
@@ -140,6 +150,11 @@ trap cleanup_tmp EXIT
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --action)
+        [[ $# -ge 2 ]] || die "--action requires a value"
+        ACTION="$2"
+        shift 2
+        ;;
       --mongodb-version)
         [[ $# -ge 2 ]] || die "--mongodb-version requires a value"
         MONGODB_VERSION="$2"
@@ -251,6 +266,51 @@ validate_environment() {
   if ! systemctl list-unit-files >/dev/null 2>&1; then
     die "systemd does not appear to be available on this host"
   fi
+}
+
+is_package_installed() {
+  dpkg -s "$1" >/dev/null 2>&1
+}
+
+is_pritunl_installed() {
+  is_package_installed pritunl
+}
+
+is_mongodb_installed() {
+  is_package_installed mongodb-org || is_package_installed mongodb-org-server
+}
+
+is_openvpn_installed() {
+  is_package_installed openvpn
+}
+
+get_install_state_text() {
+  if "$1"; then
+    printf '已安装'
+  else
+    printf '未安装'
+  fi
+}
+
+get_service_state() {
+  local service="$1"
+  systemctl is-active "${service}" 2>/dev/null || true
+}
+
+print_detected_status() {
+  printf '\n%s%s================ 当前状态 ================%s\n' "${COLOR_BOLD}" "${COLOR_GREEN}" "${COLOR_RESET}"
+  printf '  Pritunl  : %s\n' "$(get_install_state_text is_pritunl_installed)"
+  printf '  MongoDB  : %s\n' "$(get_install_state_text is_mongodb_installed)"
+  printf '  OpenVPN  : %s\n' "$(get_install_state_text is_openvpn_installed)"
+  printf '  mongod   : %s\n' "$(get_service_state mongod)"
+  printf '  pritunl  : %s\n' "$(get_service_state pritunl)"
+}
+
+confirm() {
+  local prompt="$1"
+  local answer=""
+  read -r -p "${prompt} [y/N]: " answer
+  [[ "${answer}" =~ ^[Yy]([Ee][Ss])?$ ]]
 }
 
 install_prerequisites() {
@@ -468,6 +528,86 @@ verify_services() {
   systemctl is-active --quiet pritunl || die "pritunl is not active"
 }
 
+remove_repo_files() {
+  local files=(
+    "/etc/apt/sources.list.d/openvpn.list"
+    "/etc/apt/sources.list.d/pritunl.list"
+    "/etc/apt/sources.list.d/mongodb-org-${MONGODB_VERSION}.list"
+  )
+  local file
+
+  for file in "${files[@]}"; do
+    if [[ -f "${file}" ]]; then
+      run rm -f "${file}"
+    fi
+  done
+}
+
+remove_keyrings() {
+  local files=(
+    "/usr/share/keyrings/openvpn-repo.gpg"
+    "/usr/share/keyrings/pritunl.gpg"
+    "/usr/share/keyrings/mongodb-server-${MONGODB_VERSION}.gpg"
+  )
+  local file
+
+  for file in "${files[@]}"; do
+    if [[ -f "${file}" ]]; then
+      run rm -f "${file}"
+    fi
+  done
+}
+
+uninstall_all() {
+  warn "即将完全卸载 Pritunl、MongoDB、OpenVPN 及相关配置。"
+
+  if [[ -t 0 ]] && ! confirm "确认继续执行完全卸载吗？"; then
+    log "已取消卸载。"
+    return
+  fi
+
+  run systemctl stop pritunl || true
+  run systemctl stop mongod || true
+
+  export DEBIAN_FRONTEND=noninteractive
+  run apt-get remove --purge -y pritunl pritunl-ndppd mongodb-org mongodb-org-server mongodb-org-mongos mongodb-org-shell mongodb-org-tools mongodb-org-database mongodb-org-database-tools-extra mongodb-mongosh mongodb-database-tools openvpn wireguard-tools || true
+  run apt-get autoremove -y || true
+  run apt-get autoclean -y || true
+
+  run rm -rf /etc/pritunl.conf /var/lib/pritunl /var/log/pritunl.log || true
+  run rm -rf /var/lib/mongodb /var/log/mongodb || true
+  run rm -f /etc/sysctl.d/90-pritunl-forwarding.conf || true
+
+  remove_repo_files
+  remove_keyrings
+  run apt-get update || true
+
+  printf '\n%s%s已完成完全卸载。%s\n' "${COLOR_BOLD}" "${COLOR_GREEN}" "${COLOR_RESET}"
+}
+
+manage_services() {
+  case "$1" in
+    start)
+      run systemctl start mongod
+      run systemctl start pritunl
+      ;;
+    stop)
+      run systemctl stop pritunl
+      run systemctl stop mongod
+      ;;
+    restart)
+      run systemctl restart mongod
+      run systemctl restart pritunl
+      ;;
+    status)
+      print_detected_status
+      ;;
+    *)
+      die "Unsupported service action: $1"
+      ;;
+  esac
+}
+
 print_summary() {
   local public_access=""
   local private_access=""
@@ -546,7 +686,6 @@ print_summary() {
   if [[ -z "${setup_key}" ]]; then
     warn "无法自动获取 Setup Key，请手动执行: sudo pritunl setup-key"
   fi
-
   if [[ -z "${admin_username}" && -z "${admin_password}" ]]; then
     warn "无法自动获取默认管理员信息，请手动执行: sudo pritunl default-password"
   fi
@@ -554,10 +693,7 @@ print_summary() {
   warn "Ubuntu 22.04 可以使用，但 Pritunl 官方长期更推荐 Oracle Linux 或 AlmaLinux。"
 }
 
-main() {
-  setup_colors
-  parse_args "$@"
-  ensure_root "$@"
+run_install_flow() {
   load_os_release
   validate_environment
   install_prerequisites
@@ -572,6 +708,91 @@ main() {
   enable_services
   verify_services
   print_summary
+}
+
+show_menu() {
+  print_detected_status
+  printf '\n%s%s请选择操作%s\n' "${COLOR_BOLD}" "${COLOR_BLUE}" "${COLOR_RESET}"
+  printf '  1. 安装\n'
+  printf '  2. 重新安装\n'
+  printf '  3. 完全卸载\n'
+  printf '  4. 启动服务\n'
+  printf '  5. 停止服务\n'
+  printf '  6. 重启服务\n'
+  printf '  7. 查看状态\n'
+  printf '  0. 退出\n'
+}
+
+handle_action() {
+  case "${ACTION}" in
+    "")
+      return
+      ;;
+    install)
+      if is_pritunl_installed; then
+        warn "检测到 Pritunl 已安装，如需覆盖安装请使用 --action reinstall"
+        print_detected_status
+        exit 0
+      fi
+      run_install_flow
+      exit 0
+      ;;
+    reinstall)
+      uninstall_all
+      run_install_flow
+      exit 0
+      ;;
+    uninstall)
+      uninstall_all
+      exit 0
+      ;;
+    start|stop|restart|status)
+      manage_services "${ACTION}"
+      exit 0
+      ;;
+    *)
+      die "Unsupported action: ${ACTION}"
+      ;;
+  esac
+}
+
+interactive_entry() {
+  local choice=""
+
+  if [[ ! -t 0 ]]; then
+    if is_pritunl_installed; then
+      print_detected_status
+      warn "当前是非交互模式，且检测到已安装。请显式传入 --action reinstall / uninstall / restart 等参数。"
+      exit 0
+    fi
+    ACTION="install"
+    handle_action
+    return
+  fi
+
+  show_menu
+  read -r -p "请输入编号: " choice
+  case "${choice}" in
+    1) ACTION="install" ;;
+    2) ACTION="reinstall" ;;
+    3) ACTION="uninstall" ;;
+    4) ACTION="start" ;;
+    5) ACTION="stop" ;;
+    6) ACTION="restart" ;;
+    7) ACTION="status" ;;
+    0) exit 0 ;;
+    *) die "无效选择: ${choice}" ;;
+  esac
+
+  handle_action
+}
+
+main() {
+  setup_colors
+  parse_args "$@"
+  ensure_root "$@"
+  handle_action
+  interactive_entry
 }
 
 main "$@"
