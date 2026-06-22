@@ -309,8 +309,17 @@ print_detected_status() {
 confirm() {
   local prompt="$1"
   local answer=""
-  read -r -p "${prompt} [y/N]: " answer
+
+  if [[ -r /dev/tty ]]; then
+    read -r -p "${prompt} [y/N]: " answer < /dev/tty
+  else
+    read -r -p "${prompt} [y/N]: " answer
+  fi
   [[ "${answer}" =~ ^[Yy]([Ee][Ss])?$ ]]
+}
+
+has_interactive_tty() {
+  [[ -r /dev/tty && -w /dev/tty ]]
 }
 
 install_prerequisites() {
@@ -759,7 +768,7 @@ handle_action() {
 interactive_entry() {
   local choice=""
 
-  if [[ ! -t 0 ]]; then
+  if ! has_interactive_tty; then
     if is_pritunl_installed; then
       print_detected_status
       warn "当前是非交互模式，且检测到已安装。请显式传入 --action reinstall / uninstall / restart 等参数。"
@@ -771,7 +780,7 @@ interactive_entry() {
   fi
 
   show_menu
-  read -r -p "请输入编号: " choice
+  read -r -p "请输入编号: " choice < /dev/tty
   case "${choice}" in
     1) ACTION="install" ;;
     2) ACTION="reinstall" ;;
