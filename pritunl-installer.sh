@@ -19,6 +19,7 @@ MONGODB_URI="mongodb://127.0.0.1:27017/pritunl"
 ACTION=""
 DETECTED_PRIVATE_IP=""
 DETECTED_PUBLIC_IP=""
+APT_LOCK_TIMEOUT="600"
 
 COLOR_RESET=""
 COLOR_BOLD=""
@@ -90,6 +91,44 @@ validate_port() {
 run() {
   log "Running: $*"
   "$@"
+}
+
+wait_for_apt_lock() {
+  local timeout="${1:-${APT_LOCK_TIMEOUT}}"
+  local waited=0
+  local lock_paths=(
+    "/var/lib/dpkg/lock-frontend"
+    "/var/lib/dpkg/lock"
+    "/var/lib/apt/lists/lock"
+    "/var/cache/apt/archives/lock"
+  )
+
+  while true; do
+    local busy="0"
+    local lock_path
+
+    for lock_path in "${lock_paths[@]}"; do
+      if command -v fuser >/dev/null 2>&1 && fuser "${lock_path}" >/dev/null 2>&1; then
+        busy="1"
+        break
+      fi
+    done
+
+    if [[ "${busy}" == "0" ]]; then
+      return 0
+    fi
+
+    if (( waited == 0 )); then
+      warn "检测到 apt/dpkg 正被其他进程占用，正在等待锁释放..."
+    fi
+
+    if (( waited >= timeout )); then
+      die "等待 apt/dpkg 锁超时（${timeout} 秒）。请稍后重试，或检查 unattended-upgrades / apt 进程。"
+    fi
+
+    sleep 5
+    waited=$((waited + 5))
+  done
 }
 
 capture_first_line() {
@@ -327,7 +366,9 @@ has_interactive_tty() {
 
 install_prerequisites() {
   export DEBIAN_FRONTEND=noninteractive
+  wait_for_apt_lock
   run apt-get update
+  wait_for_apt_lock
   run apt-get install -y ca-certificates curl gnupg lsb-release apt-transport-https software-properties-common ufw
   install -d -m 0755 /usr/share/keyrings
   TMP_DIR="$(mktemp -d)"
@@ -442,7 +483,9 @@ install_packages() {
     packages+=(wireguard-tools)
   fi
 
+  wait_for_apt_lock
   run apt-get update
+  wait_for_apt_lock
   run apt-get install -y "${packages[@]}"
 }
 
@@ -582,8 +625,11 @@ uninstall_all() {
   run systemctl stop mongod || true
 
   export DEBIAN_FRONTEND=noninteractive
+  wait_for_apt_lock
   run apt-get remove --purge -y pritunl pritunl-ndppd mongodb-org mongodb-org-server mongodb-org-mongos mongodb-org-shell mongodb-org-tools mongodb-org-database mongodb-org-database-tools-extra mongodb-mongosh mongodb-database-tools openvpn wireguard-tools || true
+  wait_for_apt_lock
   run apt-get autoremove -y || true
+  wait_for_apt_lock
   run apt-get autoclean -y || true
 
   run rm -rf /etc/pritunl.conf /var/lib/pritunl /var/log/pritunl.log || true
@@ -592,6 +638,7 @@ uninstall_all() {
 
   remove_repo_files
   remove_keyrings
+  wait_for_apt_lock
   run apt-get update || true
 
   printf '\n%s%s已完成完全卸载。%s\n' "${COLOR_BOLD}" "${COLOR_GREEN}" "${COLOR_RESET}"
