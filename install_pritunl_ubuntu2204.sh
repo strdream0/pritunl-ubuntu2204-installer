@@ -13,6 +13,8 @@ SKIP_OPENVPN_REPO="0"
 SKIP_WIREGUARD="0"
 ALLOW_UNSUPPORTED_OS="0"
 MONGODB_URI="mongodb://127.0.0.1:27017/pritunl"
+DETECTED_PRIVATE_IP=""
+DETECTED_PUBLIC_IP=""
 
 log() {
   printf '[INFO] %s\n' "$*"
@@ -67,6 +69,10 @@ validate_port() {
 run() {
   log "Running: $*"
   "$@"
+}
+
+capture_first_line() {
+  awk 'NF { print; exit }'
 }
 
 cleanup_tmp() {
@@ -207,6 +213,39 @@ install_prerequisites() {
   run apt-get install -y ca-certificates curl gnupg lsb-release apt-transport-https software-properties-common ufw
   install -d -m 0755 /usr/share/keyrings
   TMP_DIR="$(mktemp -d)"
+}
+
+detect_private_ip() {
+  local detected=""
+
+  if command -v ip >/dev/null 2>&1; then
+    detected="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '/src/ {for (i=1; i<=NF; i++) if ($i == "src") {print $(i+1); exit}}')"
+  fi
+
+  if [[ -z "${detected}" ]]; then
+    detected="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  fi
+
+  DETECTED_PRIVATE_IP="${detected}"
+}
+
+detect_public_ip() {
+  local provider
+  local detected=""
+  local providers=(
+    "https://api.ipify.org"
+    "https://api64.ipify.org"
+    "https://ifconfig.me/ip"
+    "https://ip.sb"
+  )
+
+  for provider in "${providers[@]}"; do
+    detected="$(curl -4fsS --max-time 5 "${provider}" 2>/dev/null | tr -d '\r' | capture_first_line || true)"
+    if [[ "${detected}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      DETECTED_PUBLIC_IP="${detected}"
+      return
+    fi
+  done
 }
 
 write_keyring() {
@@ -390,13 +429,17 @@ print_summary() {
   local mongod_status
   local pritunl_status
 
+  detect_private_ip
+  detect_public_ip
+
   if [[ -n "${PUBLIC_ADDRESS}" ]]; then
     endpoint="${PUBLIC_ADDRESS}"
+  elif [[ -n "${DETECTED_PUBLIC_IP}" ]]; then
+    endpoint="${DETECTED_PUBLIC_IP}"
+  elif [[ -n "${DETECTED_PRIVATE_IP}" ]]; then
+    endpoint="${DETECTED_PRIVATE_IP}"
   else
-    endpoint="$(hostname -I 2>/dev/null | awk '{print $1}')"
-    if [[ -z "${endpoint}" ]]; then
-      endpoint="<server-ip-or-hostname>"
-    fi
+    endpoint="<server-ip-or-hostname>"
   fi
 
   if command -v pritunl >/dev/null 2>&1; then
@@ -413,6 +456,9 @@ Installation completed.
 
 Key install information:
   Web console: https://${endpoint}:${ADMIN_PORT}
+  Preferred access address: ${endpoint}
+  Detected private IP: ${DETECTED_PRIVATE_IP:-<not-detected>}
+  Detected public IP: ${DETECTED_PUBLIC_IP:-<not-detected>}
   Admin port: ${ADMIN_PORT}/tcp
   VPN port: ${VPN_PORT}/tcp, ${VPN_PORT}/udp
   MongoDB URI: ${MONGODB_URI}
