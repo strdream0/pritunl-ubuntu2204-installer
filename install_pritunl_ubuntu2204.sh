@@ -125,8 +125,8 @@ extract_pritunl_credentials() {
   local password=""
 
   clean_output="$(printf '%s\n' "${raw_output}" | strip_ansi)"
-  username="$(printf '%s\n' "${clean_output}" | awk -F'"' '/username:/ {print $2; exit}')"
-  password="$(printf '%s\n' "${clean_output}" | awk -F'"' '/password:/ {print $2; exit}')"
+  username="$(printf '%s\n' "${clean_output}" | awk -F'"' '/^[[:space:]]*username:[[:space:]]*"/ {print $2; exit}')"
+  password="$(printf '%s\n' "${clean_output}" | awk -F'"' '/^[[:space:]]*password:[[:space:]]*"/ {print $2; exit}')"
 
   printf '%s\n%s\n' "${username}" "${password}"
 }
