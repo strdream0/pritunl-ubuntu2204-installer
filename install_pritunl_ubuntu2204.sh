@@ -672,7 +672,7 @@ print_summary() {
 
   print_section "端口信息"
   printf '  管理端口 : %s/tcp\n' "${ADMIN_PORT}"
-  printf '  VPN 端口 : %s/tcp, %s/udp\n' "${VPN_PORT}" "${VPN_PORT}"
+  printf '  建议 VPN 端口 : %s/tcp, %s/udp\n' "${VPN_PORT}" "${VPN_PORT}"
   printf '  MongoDB  : %s\n' "${MONGODB_URI}"
 
   print_section "密钥和初始账户"
@@ -721,7 +721,7 @@ run_install_flow() {
 
 show_menu() {
   print_detected_status
-  printf '\n%s%s请选择操作%s\n' "${COLOR_BOLD}" "${COLOR_BLUE}" "${COLOR_RESET}"
+  printf '\n%s%s请选择操作（by:strdream0）%s\n' "${COLOR_BOLD}" "${COLOR_BLUE}" "${COLOR_RESET}"
   printf '  1. 安装\n'
   printf '  2. 重新安装\n'
   printf '  3. 完全卸载\n'
@@ -730,6 +730,7 @@ show_menu() {
   printf '  6. 重启服务\n'
   printf '  7. 查看状态\n'
   printf '  0. 退出\n'
+  printf '  https://github.com/strdream0/pritunl-ubuntu2204-installer.git'
 }
 
 handle_action() {
