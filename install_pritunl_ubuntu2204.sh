@@ -452,44 +452,50 @@ print_summary() {
 
   cat <<EOF
 
-Installation completed.
+================ 安装完成 ================
 
-Key install information:
-  Web console: https://${endpoint}:${ADMIN_PORT}
-  Preferred access address: ${endpoint}
-  Detected private IP: ${DETECTED_PRIVATE_IP:-<not-detected>}
-  Detected public IP: ${DETECTED_PUBLIC_IP:-<not-detected>}
-  Admin port: ${ADMIN_PORT}/tcp
-  VPN port: ${VPN_PORT}/tcp, ${VPN_PORT}/udp
-  MongoDB URI: ${MONGODB_URI}
-  mongod status: ${mongod_status}
-  pritunl status: ${pritunl_status}
+访问地址
+  管理后台: https://${endpoint}:${ADMIN_PORT}
+  优先使用: ${endpoint}
+  内网 IP : ${DETECTED_PRIVATE_IP:-<未检测到>}
+  外网 IP : ${DETECTED_PUBLIC_IP:-<未检测到>}
 
-Firewall reminder:
-  Allow ${ADMIN_PORT}/tcp for the admin web UI
-  Allow ${VPN_PORT}/tcp and ${VPN_PORT}/udp for VPN traffic if you use that port
+服务状态
+  mongod  : ${mongod_status}
+  pritunl : ${pritunl_status}
 
-Initial setup:
-  1. Open the web console and finish the admin account bootstrap.
-  2. Create an organization and users.
-  3. Create a server, attach the organization, then start the server.
-  4. Download each user's .ovpn profile from the web UI.
+端口信息
+  管理端口 : ${ADMIN_PORT}/tcp
+  VPN 端口 : ${VPN_PORT}/tcp, ${VPN_PORT}/udp
+  MongoDB  : ${MONGODB_URI}
+
+防火墙提醒
+  请放行 ${ADMIN_PORT}/tcp
+  请放行 ${VPN_PORT}/tcp 和 ${VPN_PORT}/udp
+
+初始化步骤
+  1. 打开上面的管理后台地址
+  2. 输入 Setup Key 完成初始化
+  3. 设置管理员账号和密码
+  4. 创建 Organization、Users、Server
+  5. 关联 Organization 后启动 Server
+  6. 下载用户的 .ovpn 配置文件并导入客户端
 
 EOF
 
   if [[ -n "${setup_key}" ]]; then
-    printf 'Setup key command output:\n%s\n\n' "${setup_key}"
+    printf 'Setup Key:\n%s\n\n' "${setup_key}"
   else
-    warn "Unable to fetch the setup key automatically. Run: sudo pritunl setup-key"
+    warn "无法自动获取 Setup Key，请手动执行: sudo pritunl setup-key"
   fi
 
   if [[ -n "${admin_password}" ]]; then
-    printf 'Initial default password command output:\n%s\n' "${admin_password}"
+    printf '默认管理员信息:\n%s\n' "${admin_password}"
   else
-    warn "Unable to fetch the default password automatically. Run: sudo pritunl default-password"
+    warn "无法自动获取默认管理员信息，请手动执行: sudo pritunl default-password"
   fi
 
-  warn "Pritunl officially recommends Oracle Linux or AlmaLinux for the best long-term compatibility. Ubuntu 22.04 is supported by repository packages but receives less testing."
+  warn "Ubuntu 22.04 可以使用，但 Pritunl 官方长期更推荐 Oracle Linux 或 AlmaLinux。"
 }
 
 main() {
